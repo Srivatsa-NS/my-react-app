@@ -41,6 +41,22 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
+      - name: Update task definition with new image
+        id: task-def
+        run: |
+          TASK_DEF=$(aws ecs describe-task-definition --task-definition $TASK_DEFINITION --query "taskDefinition")
+          NEW_TASK_DEF=$(echo $TASK_DEF | python3 -c "
+          import json, sys
+          td = json.load(sys.stdin)
+          for c in td['containerDefinitions']:
+              if c['name'] == '${{ env.CONTAINER_NAME }}':
+                  c['image'] = '${{ steps.build-image.outputs.image }}'
+          keys = ['family','networkMode','requiresCompatibilities','cpu','memory','executionRoleArn','containerDefinitions']
+          print(json.dumps({k: td[k] for k in keys if k in td}))
+          ")
+          NEW_REVISION=$(aws ecs register-task-definition --cli-input-json "$NEW_TASK_DEF" --query "taskDefinition.taskDefinitionArn" --output text)
+          echo "task_def_arn=$NEW_REVISION" >> $GITHUB_OUTPUT
+
       - name: Stop existing Fargate tasks
         run: |
           TASKS=$(aws ecs list-tasks --cluster $ECS_CLUSTER --query "taskArns" --output text)
@@ -52,7 +68,6 @@ jobs:
         run: |
           aws ecs run-task \
             --cluster $ECS_CLUSTER \
-            --task-definition $TASK_DEFINITION \
+            --task-definition ${{ steps.task-def.outputs.task_def_arn }} \
             --launch-type FARGATE \
-            --network-configuration "awsvpcConfiguration={subnets=[subnet-035ce7cd0ce1fd84e],securityGroups=[sg-0651f604ad0907f45],assignPublicIp=ENABLED}" \
-            --overrides "{\"containerOverrides\":[{\"name\":\"$CONTAINER_NAME\",\"image\":\"${{ steps.build-image.outputs.image }}\"}]}"
+            --network-configuration "awsvpcConfiguration={subnets=[subnet-035ce7cd0ce1fd84e],securityGroups=[sg-0651f604ad0907f45],assignPublicIp=ENABLED}"
